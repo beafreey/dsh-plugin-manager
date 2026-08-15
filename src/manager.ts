@@ -63,9 +63,21 @@ const REGISTRY_CACHE_MS = 60_000
 /** Parallelism cap for update checks. */
 const CHECK_CONCURRENCY = 6
 
+/** Whether the target platform runs Windows (spawn/candidates behave differently). */
+const isWin = (platform: NodeJS.Platform): boolean => platform === 'win32'
+
 /** Default spawn implementation over node:child_process. */
 export const defaultSpawn: SpawnFn = (command, args, { cwd, timeoutMs, env }) => new Promise((resolveSpawn) => {
-  const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] })
+  // Windows ships pnpm as a .cmd shim, which node cannot exec without a shell.
+  // shell:true makes cmd.exe run it; the argument list contains only validated
+  // package names and fixed flags (no user-controlled free text), so quoting
+  // through cmd.exe is safe.
+  const child = spawn(command, args, {
+    cwd,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: isWin(process.platform),
+  })
   let stdout = ''
   let stderr = ''
   let settled = false
@@ -130,19 +142,44 @@ export function specToRepositoryUrl(spec: string): string | undefined {
   return direct?.[1]?.replace(/[.]git$/, '')
 }
 
+/** Platform-aware PATH separator and well-known package-manager locations. */
+function platformPathSpec(platform: NodeJS.Platform): { separator: string; extras: string[] } {
+  if (platform === 'win32') {
+    const appData = process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming')
+    const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local')
+    const programFiles = process.env.ProgramFiles ?? 'C:\\Program Files'
+    return {
+      separator: ';',
+      extras: [
+        join(appData, 'npm'),
+        join(localAppData, 'pnpm'),
+        join(programFiles, 'nodejs'),
+      ],
+    }
+  }
+  return {
+    separator: ':',
+    extras: ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', join(homedir(), 'Library', 'pnpm'), join(homedir(), '.local', 'share', 'pnpm')],
+  }
+}
+
 /** Locate the pnpm binary from explicit config, PATH, then known locations. */
-export function findPnpm(explicit: string | undefined, env: NodeJS.ProcessEnv = process.env): string | undefined {
+export function findPnpm(
+  explicit: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
   if (explicit !== undefined && explicit !== '') {
     if (existsSync(explicit)) return resolve(explicit)
     return undefined
   }
-  const pathDirs = (env.PATH ?? '').split(':').filter((entry) => entry !== '')
+  const { separator, extras } = platformPathSpec(platform)
+  const pathDirs = (env.PATH ?? '').split(separator).filter((entry) => entry !== '')
+  // Windows ships pnpm as a .cmd shim; probe both the bare name and the shim.
+  const candidateNames = isWin(platform) ? ['pnpm', 'pnpm.cmd'] : ['pnpm']
   const candidates = [
-    ...pathDirs.map((dir) => join(dir, 'pnpm')),
-    '/opt/homebrew/bin/pnpm',
-    '/usr/local/bin/pnpm',
-    join(homedir(), 'Library', 'pnpm', 'pnpm'),
-    join(homedir(), '.local', 'share', 'pnpm', 'pnpm'),
+    ...pathDirs.flatMap((dir) => candidateNames.map((name) => join(dir, name))),
+    ...extras.flatMap((dir) => candidateNames.map((name) => join(dir, name))),
   ]
   for (const candidate of candidates) {
     if (candidate !== '' && existsSync(candidate)) return resolve(candidate)
@@ -150,14 +187,32 @@ export function findPnpm(explicit: string | undefined, env: NodeJS.ProcessEnv = 
   return undefined
 }
 
-/** Merge common binary dirs into a PATH so GUI-spawned shells still find pnpm/git. */
-function widenedPath(base: NodeJS.ProcessEnv = process.env): string {
-  const extra = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', join(homedir(), 'Library', 'pnpm')]
-  const seen = new Set((base.PATH ?? '').split(':').filter((entry) => entry !== ''))
-  for (const dir of extra) {
+/**
+ * Merge common binary dirs into a PATH so GUI-spawned shells still find
+ * pnpm/git. Platform-aware: `;` separator and npm/pnpm/nodejs locations on
+ * Windows, brew/usr locations elsewhere.
+ */
+function widenedPath(base: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
+  const { separator, extras } = platformPathSpec(platform)
+  const seen = new Set((base.PATH ?? '').split(separator).filter((entry) => entry !== ''))
+  for (const dir of extras) {
     if (!seen.has(dir) && existsSync(dir)) seen.add(dir)
   }
-  return [...seen].join(':')
+  return [...seen].join(separator)
+}
+
+/**
+ * Acceptable package-name shape for command lines. Registry package names and
+ * scoped names fit this; anything outside it (whitespace, shell metacharacters)
+ * is refused before it can reach a spawned shell.
+ */
+const SAFE_PACKAGE_NAME = /^[A-Za-z0-9@._/-]+$/
+
+/** Validate a package name before it reaches a spawn argument list. */
+function assertSafePackageName(name: string): void {
+  if (!SAFE_PACKAGE_NAME.test(name)) {
+    throw new Error(`refusing package name ${JSON.stringify(name)}: characters outside [A-Za-z0-9@._/-] are not allowed`)
+  }
 }
 
 /** The dsh plugin manager: one instance per host plugin apply. */
@@ -474,6 +529,7 @@ export class PluginManager {
     if (this.updating !== undefined) {
       throw new Error(`another profile operation is already running (${this.updating})`)
     }
+    assertSafePackageName(name)
     const manifest = this.readProfileManifest()
     const spec = manifest?.dependencies[name]
     if (spec === undefined) throw new Error(`package '${name}' is not a profile dependency`)
@@ -541,6 +597,7 @@ export class PluginManager {
     if (this.updating !== undefined) {
       throw new Error(`another profile operation is already running (${this.updating})`)
     }
+    assertSafePackageName(name)
     const manifest = this.readProfileManifest()
     if (manifest?.dependencies[name] === undefined) {
       throw new Error(`package '${name}' is not a profile dependency`)

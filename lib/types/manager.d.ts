@@ -43,7 +43,7 @@ export declare function classifySpec(spec: string): PluginInstallKind;
  */
 export declare function specToRepositoryUrl(spec: string): string | undefined;
 /** Locate the pnpm binary from explicit config, PATH, then known locations. */
-export declare function findPnpm(explicit: string | undefined, env?: NodeJS.ProcessEnv): string | undefined;
+export declare function findPnpm(explicit: string | undefined, env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform): string | undefined;
 /** The dsh plugin manager: one instance per host plugin apply. */
 export declare class PluginManager {
     private readonly deps;

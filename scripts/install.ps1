@@ -19,6 +19,8 @@
 #
 # 环境变量：
 #   DSH_CMD      默认优先 PATH 上的 dsh，缺省回退 npx -y --package @deepseek-ai/dsh
+#                （DSH_CMD 需为不含空格的可执行名；若 dsh 位于带空格路径，
+#                 请把该目录加入 PATH 后用默认探测）
 #
 # 卸载：dsh plugin --profile web remove dsh-plugin-manager
 #       （或在插件面板里点「删除」）

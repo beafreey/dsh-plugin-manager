@@ -39,6 +39,6 @@ export declare const Config: z<Config>;
  * @param config - resolved plugin config (schema defaults applied by the loader).
  */
 export declare function apply(ctx: Context, config?: Config): void;
-export { PluginManager, classifySpec, specToRepositoryUrl } from './manager.ts';
+export { PluginManager, classifySpec, findPnpm, specToRepositoryUrl } from './manager.ts';
 export type { ManagerConfig };
 export type { PluginEntry, ProfileSummary, UpdateResult } from './protocol.ts';

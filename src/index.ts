@@ -133,6 +133,6 @@ export function apply(ctx: Context, config?: Config): void {
   sync()
 }
 
-export { PluginManager, classifySpec, specToRepositoryUrl } from './manager.ts'
+export { PluginManager, classifySpec, findPnpm, specToRepositoryUrl } from './manager.ts'
 export type { ManagerConfig }
 export type { PluginEntry, ProfileSummary, UpdateResult } from './protocol.ts'
