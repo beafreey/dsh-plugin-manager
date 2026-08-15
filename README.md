@@ -1,16 +1,19 @@
 # dsh-plugin-manager
 
-DSH Web GUI 的第三方插件管理器：列出本地 profile 中通过 pnpm 安装的第三方插件（包名 / 版本 / git 仓库），检测更新（npm registry + `git ls-remote`），面板内一键 pnpm 更新。热插拔 —— 通过 profile 的 node_modules 依赖挂载，无需改动 dsh 源码。
+DSH Web GUI 的第三方插件管理器：列出本地 profile 中通过 pnpm 安装的第三方插件（包名 / 版本 / git 仓库，含 GitHub 安装的插件），检测更新（npm registry + `git ls-remote`），面板内一键 pnpm 更新与删除。热插拔 —— 通过 profile 的 node_modules 依赖挂载，无需改动 dsh 源码。
 
 ## 能力
 
-- **插件清单**：读取 `~/.dsh/profiles/<profile>/package.json` 的 dependencies，逐包解析安装目录中的 package.json，展示版本、仓库地址、是否为 bundle（声明了 `dsh.bundle.patch`）。
+- **插件清单**：读取 `~/.dsh/profiles/<profile>/package.json` 的 dependencies，逐包解析安装目录中的 package.json，展示版本、仓库地址、是否为 bundle（声明了 `dsh.bundle.patch`）。三种安装来源都能发现：
+  - **npm registry 安装**：按 registry 最新版本检查更新；
+  - **GitHub / Git 安装**（`dsh plugin add github:用户/仓库`、`git+https://...`、`gitlab:`、`bitbucket:`）：从依赖 spec 推导仓库地址（即使包内没写 `repository` 字段也能检查），用 `git ls-remote` 比对默认分支 HEAD；已安装的提交从 `pnpm-lock.yaml` 的 importer 记录读取（pnpm 11 不再在包内写 `gitHead`）；
+  - **本地 link/file 安装**：标记为本地链接，跳过检查（需在源码目录自行更新）。
 - **更新检查**：
   - registry 安装的包 → 查询 npm registry（默认 `https://registry.npmjs.org`，可在插件设置里改）；
-  - git 安装的包（`git+...` / `github:...` 等 spec）→ `git ls-remote` 比较默认分支 HEAD 与安装时记录的 `gitHead`；
-  - `link:` / `file:` 本地包 → 标记为本地链接，跳过检查。
+  - git 安装的包 → `git ls-remote` 比较默认分支 HEAD 与安装时解析的提交。
 - **一键更新**：面板内对单个插件或全部可更新插件执行 pnpm；registry 包按**检查到的精确最新版本**安装（`pnpm add <包名>@<最新版> --save-exact`，不用 `@latest`——pnpm 11 的供应链 release-age 策略会把 `latest` 解析到 ≥1 天的旧版本，可能造成降级），git 包用 `pnpm up`；同一时刻只允许一个更新在跑。更新完成后提示重启 DSH（host 端新代码需重启加载，client 端刷新页面即可）。
-- **Agent 工具**：`dsh_plugin_check`（列出插件并检测更新）、`dsh_plugin_update`（更新单个或全部可更新插件），与面板共用同一套服务。
+- **删除插件**：面板内每个插件有「删除」按钮（两段式确认），执行 `pnpm remove <包名>` 并把包名从 `dsh.profile.bundles` 同步移除；删除后提示重启 DSH 完全卸载。
+- **Agent 工具**：`dsh_plugin_check`（列出插件并检测更新）、`dsh_plugin_update`（更新单个或全部可更新插件）、`dsh_plugin_remove`（删除单个插件），与面板共用同一套服务。
 - **设置项**（DSH 设置页插件区，命名空间 `dsh-plugin-manager`）：profile 名称（默认自动检测，缺省 `web`）、registry 地址、pnpm 路径、总开关、agent 公告开关。
 
 ## 安装

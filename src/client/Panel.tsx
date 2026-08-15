@@ -4,7 +4,7 @@
  * restart hint. Pure view over the controller snapshot (useSyncExternalStore).
  */
 
-import { Component, useSyncExternalStore, type ReactNode } from 'react'
+import { Component, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { PluginManagerController, PanelSnapshot } from './controller.ts'
 import type { PluginEntry } from '../protocol.ts'
 
@@ -52,11 +52,14 @@ function PluginRow(props: {
   updating: boolean
   busy: boolean
   onUpdate: (name: string) => void
+  onRemove: (name: string) => void
 }): JSX.Element {
-  const { entry, updating, busy, onUpdate } = props
+  const { entry, updating, busy, onUpdate, onRemove } = props
+  const [confirming, setConfirming] = useState(false)
   const meta = STATE_META[entry.state] ?? STATE_FALLBACK
   const local = entry.kind === 'local'
   const canUpdate = !updating && !busy && !local && entry.state !== 'unknown'
+  const canRemove = !updating && !busy
   return (
     <tr>
       <td>
@@ -87,19 +90,50 @@ function PluginRow(props: {
       </td>
       <td>
         {updating ? (
-          <span className="dshpm-inline dshpm-muted"><span className="dshpm-spinner" />更新中…</span>
-        ) : local ? (
-          <span className="dshpm-muted dshpm-tiny">本地链接，请在源码目录更新</span>
+          <span className="dshpm-inline dshpm-muted"><span className="dshpm-spinner" />处理中…</span>
+        ) : confirming ? (
+          <span className="dshpm-actions">
+            <button
+              type="button"
+              className="dshpm-ghostButton"
+              disabled={!canRemove}
+              onClick={() => { setConfirming(false); onRemove(entry.name) }}
+            >
+              确认删除
+            </button>
+            <button
+              type="button"
+              className="dshpm-ghostButton"
+              onClick={() => { setConfirming(false) }}
+            >
+              取消
+            </button>
+          </span>
         ) : (
-          <button
-            type="button"
-            className="dshpm-ghostButton"
-            disabled={!canUpdate}
-            title={entry.state === 'unknown' ? '先检查更新' : `更新 ${entry.name} 到最新版本`}
-            onClick={() => { onUpdate(entry.name) }}
-          >
-            更新
-          </button>
+          <span className="dshpm-actions">
+            {local ? (
+              <span className="dshpm-muted dshpm-tiny">本地链接，请在源码目录更新</span>
+            ) : (
+              <button
+                type="button"
+                className="dshpm-ghostButton"
+                disabled={!canUpdate}
+                title={entry.state === 'unknown' ? '先检查更新' : `更新 ${entry.name} 到最新版本`}
+                onClick={() => { onUpdate(entry.name) }}
+              >
+                更新
+              </button>
+            )}
+            <button
+              type="button"
+              className="dshpm-ghostButton dshpm-dangerButton"
+              disabled={!canRemove}
+              title={`从 profile 中删除 ${entry.name}`}
+              onClick={() => { setConfirming(true) }}
+            >
+              删除
+            </button>
+          </span>
         )}
       </td>
     </tr>
@@ -192,6 +226,7 @@ export function PluginManagerPanel(props: { controller: PluginManagerController 
                   updating={snapshot.updating.has(entry.name)}
                   busy={busy}
                   onUpdate={(name) => { void controller.update(name) }}
+                  onRemove={(name) => { void controller.remove(name) }}
                 />
               ))}
             </tbody>

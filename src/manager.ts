@@ -9,7 +9,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -113,6 +113,21 @@ export function classifySpec(spec: string): PluginInstallKind {
   if (/^(link|file|workspace|portal):/.test(spec)) return 'local'
   if (/^git[+]|^github:|^gitlab:|^bitbucket:|[.]git(?:#|$)/.test(spec)) return 'git'
   return 'registry'
+}
+
+/**
+ * Derive a browsable repository URL from a git dependency spec. Fallback for
+ * git-installed plugins whose own manifest carries no `repository` field —
+ * github:/gitlab:/bitbucket: shorthands and git+https URLs all resolve.
+ */
+export function specToRepositoryUrl(spec: string): string | undefined {
+  const shorthand = /^(github|gitlab|bitbucket):([^#/]+)\/([^#]+)/.exec(spec)
+  if (shorthand?.[1] !== undefined && shorthand[2] !== undefined && shorthand[3] !== undefined) {
+    const host = { github: 'github.com', gitlab: 'gitlab.com', bitbucket: 'bitbucket.org' }[shorthand[1]]
+    return `https://${host}/${shorthand[2]}/${shorthand[3].replace(/[.]git$/, '')}`
+  }
+  const direct = /^(?:git\+)?(https?:\/\/\S+?)(?:#\S*)?$/.exec(spec)
+  return direct?.[1]?.replace(/[.]git$/, '')
 }
 
 /** Locate the pnpm binary from explicit config, PATH, then known locations. */
@@ -255,6 +270,25 @@ export class PluginManager {
     }
   }
 
+  /**
+   * The commit hash pnpm resolved for a git dependency, read from the
+   * profile's pnpm-lock.yaml. pnpm 11 no longer records `gitHead` inside the
+   * installed package.json, but the lockfile's importer entry carries the
+   * commit-addressed tarball URL (`...tar.gz/<40-hex-hash>`).
+   */
+  private installedGitCommit(name: string): string | undefined {
+    const lockPath = join(this.profileDir(), 'pnpm-lock.yaml')
+    if (!existsSync(lockPath)) return undefined
+    const text = readFileSync(lockPath, 'utf8')
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    // Direct-dep entry under `importers:` — the name at 6-space indent, then
+    // its `version:` line (the resolved tarball URL for git specs).
+    const block = new RegExp(`^\\s{6}${escaped}:\\n(?:\\s{8}[^:\\n]+:[^\\n]*\\n)*?\\s{8}version: (\\S+)`, 'm').exec(text)
+    const version = block?.[1]
+    if (version === undefined) return undefined
+    return /(?:tar\.gz\/|\.git#)([0-9a-f]{40})$/.exec(version)?.[1]
+  }
+
   /** Project every profile dependency into a plugin row (no update checks). */
   listPlugins(): PluginEntry[] {
     const manifest = this.readProfileManifest()
@@ -265,10 +299,10 @@ export class PluginManager {
         name,
         spec,
         version: meta?.version ?? 'unknown',
-        repository: meta?.repository,
+        repository: meta?.repository ?? specToRepositoryUrl(spec),
         isBundle: meta?.isBundle ?? false,
         kind: classifySpec(spec),
-        gitHead: meta?.gitHead,
+        gitHead: meta?.gitHead ?? this.installedGitCommit(name),
         latest: undefined,
         latestGitHead: undefined,
         latestSource: undefined,
@@ -351,10 +385,14 @@ export class PluginManager {
       return { ...next, state: 'current', error: undefined, latest: entry.version }
     }
     if (entry.kind === 'git') {
-      if (entry.repository === undefined) {
-        return { ...next, state: 'error', error: 'git dependency without a repository URL' }
+      // The manifest's repository field first; for GitHub-installed plugins
+      // whose manifest lacks one, derive the remote from the dependency spec
+      // (github:/gitlab:/bitbucket: shorthands and git+https URLs).
+      const url = entry.repository ?? specToRepositoryUrl(entry.spec)
+      if (url === undefined) {
+        return { ...next, state: 'error', error: 'git dependency without a resolvable repository URL' }
       }
-      const remote = await this.gitRemoteHead(entry.repository)
+      const remote = await this.gitRemoteHead(url)
       if (remote.head === undefined) {
         return { ...next, state: 'error', error: remote.error ?? 'git check failed' }
       }
@@ -362,6 +400,7 @@ export class PluginManager {
       const latest = remote.head.slice(0, 7)
       return {
         ...next,
+        repository: entry.repository ?? url,
         latest,
         latestGitHead: remote.head,
         latestSource: 'git',
@@ -433,7 +472,7 @@ export class PluginManager {
   /** Update one plugin through pnpm (throws on failure details). */
   async updatePlugin(name: string): Promise<UpdateResult> {
     if (this.updating !== undefined) {
-      throw new Error(`another update is already running for ${this.updating}`)
+      throw new Error(`another profile operation is already running (${this.updating})`)
     }
     const manifest = this.readProfileManifest()
     const spec = manifest?.dependencies[name]
@@ -460,6 +499,67 @@ export class PluginManager {
       })
       const output = [result.stdout, result.stderr].filter((part) => part !== '').join('\n')
       const ok = result.exitCode === 0
+      return {
+        name,
+        ok,
+        output: output === '' ? `pnpm exited with code ${String(result.exitCode)}` : output,
+        durationMs: Date.now() - started,
+        error: result.error ?? (ok ? undefined : `pnpm exited with code ${String(result.exitCode)}`),
+      }
+    } finally {
+      this.updating = undefined
+    }
+  }
+
+  /** Drop a removed dependency from the profile's bundle layer list. */
+  private reconcileBundlesAfterRemoval(name: string): void {
+    const manifestPath = join(this.profileDir(), 'package.json')
+    if (!existsSync(manifestPath)) return
+    try {
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+        dsh?: { profile?: { bundles?: string[] } }
+      }
+      const bundles = manifest.dsh?.profile?.bundles
+      if (bundles === undefined || !bundles.includes(name)) return
+      manifest.dsh = {
+        ...manifest.dsh,
+        profile: {
+          ...manifest.dsh?.profile,
+          bundles: bundles.filter((entry) => entry !== name),
+        },
+      }
+      writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
+    } catch {
+      // Manifest rewrite is best-effort: a failed sync leaves the name in the
+      // bundle list, which the dsh CLI reconciles away on the next plugin
+      // command anyway.
+    }
+  }
+
+  /** Remove one plugin from the profile through pnpm (throws on failure). */
+  async removePlugin(name: string): Promise<UpdateResult> {
+    if (this.updating !== undefined) {
+      throw new Error(`another profile operation is already running (${this.updating})`)
+    }
+    const manifest = this.readProfileManifest()
+    if (manifest?.dependencies[name] === undefined) {
+      throw new Error(`package '${name}' is not a profile dependency`)
+    }
+    const pnpm = this.pnpmPath()
+    if (pnpm === undefined) {
+      throw new Error('pnpm not found — install pnpm or set the pnpm path in the plugin settings')
+    }
+    this.updating = `remove:${name}`
+    const started = Date.now()
+    try {
+      const result = await this.spawn(pnpm, ['remove', name], {
+        cwd: this.profileDir(),
+        timeoutMs: 10 * 60_000,
+        env: { ...process.env, PATH: widenedPath() },
+      })
+      const output = [result.stdout, result.stderr].filter((part) => part !== '').join('\n')
+      const ok = result.exitCode === 0
+      if (ok) this.reconcileBundlesAfterRemoval(name)
       return {
         name,
         ok,

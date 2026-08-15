@@ -197,6 +197,40 @@ export class PluginManagerController {
     }
   }
 
+  /** Remove one plugin from the profile; returns the pnpm result. */
+  async remove(name: string): Promise<UpdateResult | undefined> {
+    const updating = new Set(this.snapshot.updating)
+    if (updating.has(name)) return undefined
+    updating.add(name)
+    this.emit({ updating, banner: undefined, lastUpdateOutput: '' })
+    try {
+      const result = await this.api.remove(name)
+      const { plugins } = await this.api.list()
+      const ok = result.ok
+      this.emit({
+        plugins,
+        banner: ok
+          ? { kind: 'ok', text: `已删除 ${name}。重启 DSH 后完全卸载。` }
+          : { kind: 'error', text: `删除 ${name} 失败：${result.error ?? '未知错误'}` },
+        needsRestart: ok || this.snapshot.needsRestart,
+        lastUpdateOutput: result.output,
+      })
+      return result
+    } catch (error) {
+      this.emit({
+        banner: {
+          kind: 'error',
+          text: error instanceof Error ? error.message : String(error),
+        },
+      })
+      return undefined
+    } finally {
+      const updating = new Set(this.snapshot.updating)
+      updating.delete(name)
+      this.emit({ updating })
+    }
+  }
+
   /** Refresh the row list after one update so the new versions show. */
   private async reloadAfterUpdate(name: string): Promise<PluginEntry[]> {
     try {

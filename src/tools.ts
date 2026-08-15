@@ -130,3 +130,37 @@ export function pluginUpdateTool(manager: PluginManager) {
     },
   })
 }
+
+/** The remove tool: removes one installed third-party plugin from the profile. */
+export function pluginRemoveTool(manager: PluginManager) {
+  return defineTool({
+    name: 'dsh_plugin_remove',
+    description: 'Remove one installed third-party dsh plugin from the active profile by running pnpm in the profile directory. ' +
+      'Host-side plugin code unloads only after dsh restarts. Requires pnpm on the host. ' +
+      'Triggers: uninstall a plugin, remove a plugin, delete a dsh plugin.',
+    parameters: {
+      name: { type: 'string', required: true, description: 'Package name to remove from the profile.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          name: { type: 'string', required: true },
+          ok: { type: 'boolean', required: true },
+          output: { type: 'string', required: true },
+          durationMs: { type: 'integer', required: true },
+          error: { type: 'string' },
+        },
+      },
+      render: (_args, value: UpdateToolRow) => {
+        const status = value.ok ? 'removed' : 'failed'
+        const tail = value.error !== undefined ? ` (${value.error})` : ''
+        return text(`${value.name}: ${status}${tail}\n${value.output}`.trim())
+      },
+    },
+    async execute(args) {
+      return await manager.removePlugin(args.name)
+    },
+  })
+}

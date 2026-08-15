@@ -297,6 +297,18 @@ html[data-dsh-pluginmanager-active]:not([data-dsh-taskboard-active]):not([data-d
   cursor: default;
 }
 
+.dshpm-dangerButton {
+  color: var(--dsw-alias-state-error-primary, #e5484d);
+  border-color: var(--dsw-alias-state-error-primary, #e5484d);
+}
+
+.dshpm-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
 /* --- spinner / banners / states ------------------------------------------------ */
 
 .dshpm-spinner {

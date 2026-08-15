@@ -70,4 +70,15 @@ export class PluginManagerApi {
     const body = await readJson<{ results: UpdateResult[] }>(response)
     return body.results
   }
+
+  /** Remove one plugin from the profile through pnpm. */
+  async remove(name: string): Promise<UpdateResult> {
+    const response = await fetch(PLUGIN_MANAGER_API.remove, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    const body = await readJson<{ result: UpdateResult }>(response)
+    return body.result
+  }
 }

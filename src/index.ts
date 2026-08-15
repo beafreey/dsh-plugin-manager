@@ -15,7 +15,7 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
 import { PluginManager, type ManagerConfig } from './manager.ts'
 import { makeRoutes } from './routes.ts'
-import { pluginCheckTool, pluginUpdateTool } from './tools.ts'
+import { pluginCheckTool, pluginRemoveTool, pluginUpdateTool } from './tools.ts'
 
 /** Stable cordis plugin name. */
 export const name = 'plugin-manager'
@@ -56,7 +56,7 @@ export const Config: z<Config> = z.object({
 const SECTION_ORDER = 160
 
 /** Model-facing announcement: plugin presence, capabilities, and limits. */
-const PLUGIN_MANAGER_GUIDANCE = '本机已安装 dsh-plugin-manager 插件（DSH 第三方插件管理器）：侧边栏「插件管理」入口；管理 web profile 中通过 pnpm 安装的第三方插件（包名/版本/git 仓库）。能力：dsh_plugin_check 列出已装插件并检测更新（npm registry 或 git ls-remote）、dsh_plugin_update 通过 pnpm 更新单个或全部可更新插件；面板内可一键更新。限制：更新只改 profile 的依赖与 lock 文件；host 端新代码需重启 DSH 生效；需网络与 pnpm；本地 link 安装的插件需在源码目录自行更新。用户提到「插件更新 / 升级插件 / 检查插件版本」时即指本插件，请据此协作。'
+const PLUGIN_MANAGER_GUIDANCE = '本机已安装 dsh-plugin-manager 插件（DSH 第三方插件管理器）：侧边栏「插件管理」入口；管理 web profile 中通过 pnpm 安装的第三方插件（包名/版本/git 仓库，含 GitHub 安装的插件）。能力：dsh_plugin_check 列出已装插件并检测更新（npm registry 或 git ls-remote）、dsh_plugin_update 通过 pnpm 更新单个或全部可更新插件、dsh_plugin_remove 删除单个第三方插件；面板内可一键更新/删除。限制：更新/删除只改 profile 的依赖与 lock 文件；host 端新代码需重启 DSH 生效；需网络与 pnpm；本地 link 安装的插件需在源码目录自行更新。用户提到「插件更新 / 升级插件 / 检查插件版本 / 删除插件 / 卸载插件」时即指本插件，请据此协作。'
 
 /**
  * Mount the plugin manager service, routes, tools, and announcement.
@@ -110,7 +110,7 @@ export function apply(ctx: Context, config?: Config): void {
       },
       'dsh-plugin-manager: routes',
     )
-    const tools = [pluginCheckTool(manager), pluginUpdateTool(manager)]
+    const tools = [pluginCheckTool(manager), pluginUpdateTool(manager), pluginRemoveTool(manager)]
     disposeTools = ctx.effect(
       () => {
         const disposers = tools.map(tool => ctx.tools.register(tool))
@@ -133,6 +133,6 @@ export function apply(ctx: Context, config?: Config): void {
   sync()
 }
 
-export { PluginManager } from './manager.ts'
+export { PluginManager, classifySpec, specToRepositoryUrl } from './manager.ts'
 export type { ManagerConfig }
 export type { PluginEntry, ProfileSummary, UpdateResult } from './protocol.ts'

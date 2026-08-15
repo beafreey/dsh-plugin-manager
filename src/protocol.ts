@@ -15,6 +15,8 @@ export const PLUGIN_MANAGER_API = {
   update: '/api/dsh-plugin-manager/update',
   /** POST — update every plugin that has a newer version. */
   updateAll: '/api/dsh-plugin-manager/update-all',
+  /** POST {name} — remove one plugin from the profile through pnpm. */
+  remove: '/api/dsh-plugin-manager/remove',
 } as const
 
 /** How a profile dependency is installed. */

@@ -42,8 +42,8 @@ console.log('routes:', registrations.routes.map(r => `${r.kind} ${r.path}`).join
 console.log('tools:', registrations.tools.map(t => t.name).join(', '))
 console.log('sections:', registrations.sections.map(s => s.name).join(', '))
 
-const expectedRoutes = 4
-const expectedTools = 2
+const expectedRoutes = 5
+const expectedTools = 3
 const expectedSections = 1
 if (
   registrations.routes.length !== expectedRoutes

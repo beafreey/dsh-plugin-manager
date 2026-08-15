@@ -137,5 +137,24 @@ export function makeRoutes(manager: PluginManager): WebRoute[] {
         }
       },
     },
+    {
+      kind: 'exact',
+      path: PLUGIN_MANAGER_API.remove,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const name = typeof body?.name === 'string' ? body.name : ''
+        if (name === '') {
+          writeJson(res, 400, { error: 'name is required' })
+          return
+        }
+        try {
+          writeJson(res, 200, { result: await manager.removePlugin(name) })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          writeJson(res, message.startsWith('another profile operation') ? 409 : 400, { error: message })
+        }
+      },
+    },
   ]
 }
