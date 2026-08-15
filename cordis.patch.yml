@@ -1,0 +1,13 @@
+# dsh-plugin-manager bundle patch: inserts the dual-face plugin row into a dsh
+# profile roster. Applied as a profile bundle layer (the `dsh.bundle.patch`
+# manifest field) over dsh-base; activate with
+# `dsh plugin --profile <name> add link:~/path/to/dsh-plugin-manager`.
+#
+# The row is a bare plugin by package name: the node half (exports ".") runs
+# in the host process (profile scan, update checks, pnpm runner, /api routes,
+# agent tools), and the `dsh.client` declaration in package.json makes the
+# browser half (exports "./client", served at /plugins/<id>/client.js) load in
+# the web GUI.
+- insert:
+    - id: plugin-manager
+      name: 'dsh-plugin-manager'
