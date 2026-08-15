@@ -1,5 +1,6 @@
 node_modules/
 .pnpm-store/
-lib/
+.test-home/
+.test-home-git/
 *.tsbuildinfo
 .DS_Store
