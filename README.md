@@ -9,7 +9,7 @@ DSH Web GUI 的第三方插件管理器：列出本地 profile 中通过 pnpm �
   - registry 安装的包 → 查询 npm registry（默认 `https://registry.npmjs.org`，可在插件设置里改）；
   - git 安装的包（`git+...` / `github:...` 等 spec）→ `git ls-remote` 比较默认分支 HEAD 与安装时记录的 `gitHead`；
   - `link:` / `file:` 本地包 → 标记为本地链接，跳过检查。
-- **一键更新**：面板内对单个插件或全部可更新插件执行 pnpm（`pnpm add <包名>@latest --save-exact`，git 包用 `pnpm up`）；同一时刻只允许一个更新在跑。更新完成后提示重启 DSH（host 端新代码需重启加载，client 端刷新页面即可）。
+- **一键更新**：面板内对单个插件或全部可更新插件执行 pnpm；registry 包按**检查到的精确最新版本**安装（`pnpm add <包名>@<最新版> --save-exact`，不用 `@latest`——pnpm 11 的供应链 release-age 策略会把 `latest` 解析到 ≥1 天的旧版本，可能造成降级），git 包用 `pnpm up`；同一时刻只允许一个更新在跑。更新完成后提示重启 DSH（host 端新代码需重启加载，client 端刷新页面即可）。
 - **Agent 工具**：`dsh_plugin_check`（列出插件并检测更新）、`dsh_plugin_update`（更新单个或全部可更新插件），与面板共用同一套服务。
 - **设置项**（DSH 设置页插件区，命名空间 `dsh-plugin-manager`）：profile 名称（默认自动检测，缺省 `web`）、registry 地址、pnpm 路径、总开关、agent 公告开关。
 

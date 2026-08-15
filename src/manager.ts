@@ -404,11 +404,30 @@ export class PluginManager {
     return entries.map((entry) => byName.get(entry.name) ?? entry)
   }
 
-  /** The pnpm argument list for updating one plugin to its latest. */
-  private updateArgs(name: string, spec: string): string[] | undefined {
+  /**
+   * The pnpm argument list for updating one plugin to its newest version.
+   *
+   * Registry packages are pinned to the EXACT version the registry reports as
+   * latest, never `@latest`: pnpm 11's supply-chain release-age policy
+   * (default minimumReleaseAge = 1 day) resolves the `latest` tag to the
+   * newest release older than the age gate, which for fast-moving plugins can
+   * be a downgrade from the installed version. An explicit version installs
+   * as requested (pnpm records it in minimumReleaseAgeExclude), matching what
+   * a manual `pnpm add pkg@<version>` update would do. A version at or below
+   * the installed one is refused.
+   */
+  private async updateArgs(name: string, spec: string): Promise<string[] | undefined> {
     if (classifySpec(spec) === 'local') return undefined
     if (classifySpec(spec) === 'git') return ['up', name]
-    return ['add', `${name}@latest`, '--save-exact']
+    const latest = await this.registryLatest(name)
+    if (latest.version === undefined) {
+      throw new Error(`cannot resolve the newest version of '${name}': ${latest.error ?? 'registry check failed'}`)
+    }
+    const meta = this.readPackageMeta(name)
+    if (meta !== undefined && compareVersions(latest.version, meta.version) <= 0) {
+      throw new Error(`'${name}' is already at the newest available version (${meta.version})`)
+    }
+    return ['add', `${name}@${latest.version}`, '--save-exact']
   }
 
   /** Update one plugin through pnpm (throws on failure details). */
@@ -419,17 +438,21 @@ export class PluginManager {
     const manifest = this.readProfileManifest()
     const spec = manifest?.dependencies[name]
     if (spec === undefined) throw new Error(`package '${name}' is not a profile dependency`)
-    const args = this.updateArgs(name, spec)
-    if (args === undefined) {
-      throw new Error(`'${name}' is installed as a local link — update it in its source directory`)
-    }
-    const pnpm = this.pnpmPath()
-    if (pnpm === undefined) {
-      throw new Error('pnpm not found — install pnpm or set the pnpm path in the plugin settings')
-    }
+    // The in-flight lock must be taken before the first await: updateArgs
+    // resolves the target version over the network, and a second update could
+    // otherwise slip through the check during that window and run pnpm
+    // concurrently in the same profile directory.
     this.updating = name
     const started = Date.now()
     try {
+      const args = await this.updateArgs(name, spec)
+      if (args === undefined) {
+        throw new Error(`'${name}' is installed as a local link — update it in its source directory`)
+      }
+      const pnpm = this.pnpmPath()
+      if (pnpm === undefined) {
+        throw new Error('pnpm not found — install pnpm or set the pnpm path in the plugin settings')
+      }
       const result = await this.spawn(pnpm, args, {
         cwd: this.profileDir(),
         timeoutMs: 10 * 60_000,
