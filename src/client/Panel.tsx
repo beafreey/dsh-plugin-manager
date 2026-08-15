@@ -4,9 +4,31 @@
  * restart hint. Pure view over the controller snapshot (useSyncExternalStore).
  */
 
-import { useSyncExternalStore } from 'react'
+import { Component, useSyncExternalStore, type ReactNode } from 'react'
 import type { PluginManagerController, PanelSnapshot } from './controller.ts'
 import type { PluginEntry } from '../protocol.ts'
+
+/** Error boundary: a render failure must show a message, never a blank panel. */
+class PanelErrorBoundary extends Component<{ children: ReactNode }, { error: Error | undefined }> {
+  state: { error: Error | undefined } = { error: undefined }
+
+  static getDerivedStateFromError(error: Error): { error: Error } {
+    return { error }
+  }
+
+  render(): ReactNode {
+    if (this.state.error !== undefined) {
+      return (
+        <div className="dshpm-panel">
+          <div className="dshpm-banner" data-kind="error">
+            面板渲染失败：{this.state.error.message}
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 /** State badge labels and kinds (fallback kept out-of-band for strictness). */
 const STATE_META: Record<string, { label: string; kind: string }> = {
@@ -87,16 +109,16 @@ function PluginRow(props: {
 /** The panel root component. */
 export function PluginManagerPanel(props: { controller: PluginManagerController }): JSX.Element {
   const { controller } = props
-  const snapshot: PanelSnapshot = useSyncExternalStore(
-    controller.subscribe.bind(controller),
-    controller.getSnapshot.bind(controller),
-  )
+  // Stable references straight off the controller: getSnapshot MUST return
+  // the same object between emits or useSyncExternalStore loops forever.
+  const snapshot: PanelSnapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot)
 
   const outdatedCount = snapshot.plugins.filter(entry => entry.state === 'outdated').length
   const busy = snapshot.updating.size > 0 || snapshot.checking || snapshot.loading
 
   return (
-    <div className="dshpm-panel">
+    <PanelErrorBoundary>
+      <div className="dshpm-panel">
       <div className="dshpm-panelHeader">
         <h2 className="dshpm-panelTitle">插件管理</h2>
         {snapshot.profile !== undefined ? (
@@ -183,6 +205,7 @@ export function PluginManagerPanel(props: { controller: PluginManagerController 
           <pre className="dshpm-pre">{snapshot.lastUpdateOutput}</pre>
         </details>
       ) : null}
-    </div>
+      </div>
+    </PanelErrorBoundary>
   )
 }

@@ -56,19 +56,29 @@ export class PluginManagerController {
     this.api = deps.api
   }
 
-  /** Subscribe to snapshot changes; returns the unsubscribe function. */
-  subscribe(listener: () => void): () => void {
+  /**
+   * Subscribe to snapshot changes; returns the unsubscribe function.
+   * Arrow property: a stable reference for useSyncExternalStore.
+   */
+  subscribe = (listener: () => void): () => void => {
     this.listeners.add(listener)
     return () => { this.listeners.delete(listener) }
   }
 
-  /** Current snapshot (sets are copied defensively). */
-  getSnapshot(): PanelSnapshot {
-    return { ...this.snapshot, updating: new Set(this.snapshot.updating) }
-  }
+  /**
+   * Current snapshot — a stable object reference between emits. Arrow
+   * property: a stable reference for useSyncExternalStore, which REQUIRES
+   * getSnapshot to return the same reference while the store is unchanged
+   * (a fresh object every call makes React loop and blank the panel).
+   */
+  getSnapshot = (): PanelSnapshot => this.snapshot
 
   private emit(next: Partial<PanelSnapshot>): void {
-    this.snapshot = { ...this.snapshot, ...next }
+    this.snapshot = {
+      ...this.snapshot,
+      ...next,
+      updating: new Set(next.updating ?? this.snapshot.updating),
+    }
     for (const listener of this.listeners) listener()
   }
 
