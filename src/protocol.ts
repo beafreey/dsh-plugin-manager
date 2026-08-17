@@ -78,10 +78,38 @@ export interface CheckRequest {
   names?: string[]
 }
 
+/** POST /check body. */
+export interface ProfileCheckRequest extends CheckRequest {
+  /** Profile to check; omitted = every managed profile. */
+  profile?: string
+}
+
 /** POST /update body. */
 export interface UpdateRequest {
   /** Package name to update. */
   name: string
+  /** Profile to update in; omitted = the current profile. */
+  profile?: string
+}
+
+/** POST /remove body. */
+export interface RemoveRequest {
+  /** Package name to remove. */
+  name: string
+  /** Profile to remove from; omitted = the current profile. */
+  profile?: string
+}
+
+/** POST /update-all body. */
+export interface UpdateAllRequest {
+  /** Profile to update; omitted = the current profile. */
+  profile?: string
+}
+
+/** One profile's summary plus its plugin rows (the panel's per-tab unit). */
+export interface ProfileView {
+  profile: ProfileSummary
+  plugins: PluginEntry[]
 }
 
 /** One update result. */

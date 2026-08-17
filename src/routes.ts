@@ -1,15 +1,21 @@
 /**
- * The /api/dsh-plugin-manager route family: plugin list, update checks, and
- * pnpm-backed updates. Every route carries a loopback-only trust fence plus
- * browser same-origin markers (mirrors the dsh-ssh pairing routes): these
- * endpoints run package updates in the user's dsh profile, so LAN-exposed dsh
- * web deployments must not serve them.
+ * The /api/dsh-plugin-manager route family: per-profile plugin listing,
+ * update checks, and pnpm-backed updates/removals. Every route carries a
+ * loopback-only trust fence plus browser same-origin markers (mirrors the
+ * dsh-ssh pairing routes): these endpoints run package operations in the
+ * user's dsh profiles, so LAN-exposed dsh web deployments must not serve them.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { PluginManager } from './manager.ts'
-import { PLUGIN_MANAGER_API, type CheckRequest, type UpdateRequest } from './protocol.ts'
+import {
+  PLUGIN_MANAGER_API,
+  type ProfileCheckRequest,
+  type RemoveRequest,
+  type UpdateAllRequest,
+  type UpdateRequest,
+} from './protocol.ts'
 
 /** Cap on JSON request bodies (update/check payloads are tiny). */
 const MAX_JSON_BODY_BYTES = 16 * 1024
@@ -85,9 +91,18 @@ export function makeRoutes(manager: PluginManager): WebRoute[] {
     {
       kind: 'exact',
       path: PLUGIN_MANAGER_API.list,
-      handler: (_req, res) => {
-        if (!guard(_req, res, 'GET')) return
-        writeJson(res, 200, { profile: manager.summary(), plugins: manager.listPlugins() })
+      handler: async (req, res) => {
+        if (!guard(req, res, 'GET')) return
+        const url = new URL(req.url ?? '/', 'http://localhost')
+        const profile = url.searchParams.get('profile') ?? undefined
+        try {
+          const views = profile !== undefined && profile !== ''
+            ? [manager.profileView(profile)]
+            : manager.allProfileViews()
+          writeJson(res, 200, { profiles: views })
+        } catch (error) {
+          writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+        }
       },
     },
     {
@@ -97,9 +112,10 @@ export function makeRoutes(manager: PluginManager): WebRoute[] {
         if (!guard(req, res, 'POST')) return
         const body = await readJsonBody(req)
         const names = Array.isArray(body?.names) ? body.names.filter((x): x is string => typeof x === 'string') : undefined
-        const request: CheckRequest = names === undefined ? {} : { names }
+        const profile = typeof body?.profile === 'string' && body.profile !== '' ? body.profile : undefined
+        const request: ProfileCheckRequest = { ...(names !== undefined ? { names } : {}), ...(profile !== undefined ? { profile } : {}) }
         try {
-          writeJson(res, 200, { profile: manager.summary(), plugins: await manager.checkUpdates(request) })
+          writeJson(res, 200, { profiles: await manager.checkProfileViews(request.profile) })
         } catch (error) {
           writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
         }
@@ -116,12 +132,15 @@ export function makeRoutes(manager: PluginManager): WebRoute[] {
           writeJson(res, 400, { error: 'name is required' })
           return
         }
-        const request: UpdateRequest = { name }
+        const request: UpdateRequest = {
+          name,
+          ...(typeof body?.profile === 'string' && body.profile !== '' ? { profile: body.profile } : {}),
+        }
         try {
-          writeJson(res, 200, { result: await manager.updatePlugin(request.name) })
+          writeJson(res, 200, { result: await manager.updatePlugin(request.name, request.profile) })
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
-          writeJson(res, message.startsWith('another update') ? 409 : 400, { error: message })
+          writeJson(res, message.startsWith('another profile operation') ? 409 : 400, { error: message })
         }
       },
     },
@@ -130,8 +149,12 @@ export function makeRoutes(manager: PluginManager): WebRoute[] {
       path: PLUGIN_MANAGER_API.updateAll,
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const request: UpdateAllRequest = {
+          ...(typeof body?.profile === 'string' && body.profile !== '' ? { profile: body.profile } : {}),
+        }
         try {
-          writeJson(res, 200, { results: await manager.updateAll() })
+          writeJson(res, 200, { results: await manager.updateAll(request.profile) })
         } catch (error) {
           writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
         }
@@ -148,8 +171,12 @@ export function makeRoutes(manager: PluginManager): WebRoute[] {
           writeJson(res, 400, { error: 'name is required' })
           return
         }
+        const request: RemoveRequest = {
+          name,
+          ...(typeof body?.profile === 'string' && body.profile !== '' ? { profile: body.profile } : {}),
+        }
         try {
-          writeJson(res, 200, { result: await manager.removePlugin(name) })
+          writeJson(res, 200, { result: await manager.removePlugin(request.name, request.profile) })
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           writeJson(res, message.startsWith('another profile operation') ? 409 : 400, { error: message })

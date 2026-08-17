@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-manager",
   "description": "Plugin manager for the dsh web GUI: lists the third-party plugins installed in a dsh profile (package name, version, git repository — including GitHub-installed plugins), checks for updates (npm registry + git ls-remote), and updates or removes them in one click through pnpm. Hot-pluggable — mounted via a profile node_modules dependency, no dsh source changes.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "engines": {
     "node": ">=20"

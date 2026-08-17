@@ -1,13 +1,15 @@
 /**
- * Agent tools: let the dsh agent list installed third-party plugins, check
- * them for updates, and update them — the same service the web panel uses, so
- * an update started in the GUI is visible to the agent and vice versa.
+ * Agent tools: let the dsh agent list installed third-party plugins across
+ * every managed profile, check them for updates, and update/remove them — the
+ * same service the web panel uses, so an update started in the GUI is visible
+ * to the agent and vice versa. Every tool accepts an optional `profile`
+ * parameter (default: every managed profile / the current profile).
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { PluginManager } from './manager.ts'
-import type { PluginEntry, UpdateResult } from './protocol.ts'
+import type { PluginEntry, ProfileView, UpdateResult } from './protocol.ts'
 
 /** One text content block (the only render shape these tools emit). */
 function text(value: string): ContentBlock[] {
@@ -31,51 +33,105 @@ function renderRow(entry: PluginEntry): string {
 type CheckToolRow = Pick<PluginEntry, 'name' | 'version' | 'latest' | 'state' | 'repository' | 'error'>
 /** The schema-derived update result the update tool renders. */
 type UpdateToolRow = Pick<UpdateResult, 'name' | 'ok' | 'output' | 'durationMs'> & { error?: string }
+/** The schema-derived profile view the check tool renders. */
+type CheckToolView = { profile: string; plugins: CheckToolRow[] }
+
+/** Render one profile's plugin rows with a header. */
+function renderView(view: CheckToolView): string {
+  const header = `profile: ${view.profile}`
+  if (view.plugins.length === 0) return `${header} — no third-party plugins installed`
+  return [
+    header,
+    'name | version | latest | state | repository | error',
+    '--- | --- | --- | --- | --- | ---',
+    ...view.plugins.map(row => renderRow(row as PluginEntry)),
+  ].join('\n')
+}
 
 /** The check tool: lists installed plugins and optionally checks for updates. */
 export function pluginCheckTool(manager: PluginManager) {
   return defineTool({
     name: 'dsh_plugin_check',
-    description: 'List the third-party plugins installed in the active dsh profile with their versions and git repositories, and optionally check the npm registry / git remotes for newer versions. ' +
+    description: 'List the third-party plugins installed in the managed dsh profiles with their versions and git repositories, and optionally check the npm registry / git remotes for newer versions. ' +
       'Triggers: plugin update status, check for plugin updates, list installed dsh plugins.',
     parameters: {
       check: { type: 'boolean', description: 'Also query the registry/git remotes for newer versions (default true).' },
       names: { type: 'array', items: { type: 'string' }, description: 'Optional package names to check instead of every plugin.' },
+      profile: { type: 'string', description: 'Restrict to one profile name (default: every managed profile).' },
     },
     output: {
       schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          plugins: {
+          profiles: {
             type: 'array',
             required: true,
             items: {
               type: 'object',
               additionalProperties: false,
               properties: {
-                name: { type: 'string', required: true },
-                version: { type: 'string', required: true },
-                latest: { type: 'string' },
-                state: { type: 'string', enum: ['unknown', 'current', 'outdated', 'error', 'checking'], required: true },
-                repository: { type: 'string' },
-                error: { type: 'string' },
+                profile: { type: 'string', required: true },
+                plugins: {
+                  type: 'array',
+                  required: true,
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      name: { type: 'string', required: true },
+                      version: { type: 'string', required: true },
+                      latest: { type: 'string' },
+                      state: { type: 'string', enum: ['unknown', 'current', 'outdated', 'error', 'checking'], required: true },
+                      repository: { type: 'string' },
+                      error: { type: 'string' },
+                    },
+                  },
+                },
               },
             },
           },
         },
       },
-      render: (_args, value: { plugins: CheckToolRow[] }) => {
-        const plugins = value.plugins
-        if (plugins.length === 0) return text('no third-party plugins installed in this profile')
-        return text(['name | version | latest | state | repository | error', '--- | --- | --- | --- | --- | ---', ...plugins.map(row => renderRow(row as PluginEntry))].join('\n'))
+      render: (_args, value: { profiles: CheckToolView[] }) => {
+        if (value.profiles.length === 0) return text('no managed dsh profiles found')
+        return text(value.profiles.map(renderView).join('\n\n'))
       },
     },
     async execute(args) {
-      const plugins = (args.check ?? true)
-        ? await manager.checkUpdates(args.names !== undefined ? { names: args.names } : undefined)
-        : manager.listPlugins()
-      return { plugins }
+      const target = args.profile !== undefined && args.profile !== '' ? args.profile : undefined
+      if (args.check ?? true) {
+        const views = await manager.checkProfileViews(target)
+        return {
+          profiles: views.map(view => ({
+            profile: view.profile.name,
+            plugins: view.plugins.map(row => ({
+              name: row.name,
+              version: row.version,
+              latest: row.latest,
+              state: row.state,
+              repository: row.repository,
+              error: row.error,
+            })),
+          })),
+        }
+      }
+      const views: ProfileView[] = target !== undefined
+        ? [manager.profileView(target)]
+        : manager.allProfileViews()
+      return {
+        profiles: views.map(view => ({
+          profile: view.profile.name,
+          plugins: view.plugins.map(row => ({
+            name: row.name,
+            version: row.version,
+            latest: row.latest,
+            state: row.state,
+            repository: row.repository,
+            error: row.error,
+          })),
+        })),
+      }
     },
   })
 }
@@ -89,6 +145,7 @@ export function pluginUpdateTool(manager: PluginManager) {
       'Triggers: update a plugin, upgrade plugins.',
     parameters: {
       name: { type: 'string', description: 'Package name to update; omit to update every outdated plugin.' },
+      profile: { type: 'string', description: 'Profile to update in (default: the current profile).' },
     },
     output: {
       schema: {
@@ -123,23 +180,25 @@ export function pluginUpdateTool(manager: PluginManager) {
       },
     },
     async execute(args) {
+      const profile = args.profile !== undefined && args.profile !== '' ? args.profile : undefined
       const results = args.name !== undefined && args.name !== ''
-        ? [await manager.updatePlugin(args.name)]
-        : await manager.updateAll()
+        ? [await manager.updatePlugin(args.name, profile)]
+        : await manager.updateAll(profile)
       return { results }
     },
   })
 }
 
-/** The remove tool: removes one installed third-party plugin from the profile. */
+/** The remove tool: removes one installed third-party plugin from a profile. */
 export function pluginRemoveTool(manager: PluginManager) {
   return defineTool({
     name: 'dsh_plugin_remove',
-    description: 'Remove one installed third-party dsh plugin from the active profile by running pnpm in the profile directory. ' +
+    description: 'Remove one installed third-party dsh plugin from a profile by running pnpm in the profile directory. ' +
       'Host-side plugin code unloads only after dsh restarts. Requires pnpm on the host. ' +
       'Triggers: uninstall a plugin, remove a plugin, delete a dsh plugin.',
     parameters: {
       name: { type: 'string', required: true, description: 'Package name to remove from the profile.' },
+      profile: { type: 'string', description: 'Profile to remove from (default: the current profile).' },
     },
     output: {
       schema: {
@@ -160,7 +219,8 @@ export function pluginRemoveTool(manager: PluginManager) {
       },
     },
     async execute(args) {
-      return await manager.removePlugin(args.name)
+      const profile = args.profile !== undefined && args.profile !== '' ? args.profile : undefined
+      return await manager.removePlugin(args.name, profile)
     },
   })
 }

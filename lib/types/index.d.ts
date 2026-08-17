@@ -23,6 +23,8 @@ export declare const PLUGIN_MANAGER_SETTINGS_NAMESPACE: import("@deepseek-ai/dsh
 export interface Config {
     /** Profile to manage; empty auto-detects (argv --profile, then `web`). */
     profile?: string;
+    /** Explicit profile list; empty auto-detects the profiles mounting this plugin. */
+    profiles?: string[];
     /** npm registry base URL for version checks. */
     registry?: string;
     /** Explicit pnpm binary path; empty auto-detects. */

@@ -1,15 +1,17 @@
 /**
  * Plugin manager core — framework-free service the host routes/tools wrap.
  *
- * Responsibilities: resolve the active dsh profile, project its third-party
+ * Responsibilities: resolve the managed dsh profiles (config override, or
+ * auto-detect the profiles that mount this plugin), project their third-party
  * dependencies (package.json deps) into plugin rows with installed version /
  * repository metadata, check for updates against the npm registry (registry
- * deps) or the git remote (git deps), and update plugins by running pnpm in
- * the profile directory. Only one update runs at a time.
+ * deps) or the git remote (git deps), and update/remove plugins by running
+ * pnpm in each profile directory. Only one operation runs per profile at a
+ * time (different profiles may update concurrently).
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -17,7 +19,6 @@ import type {
   CheckRequest,
   PluginEntry,
   PluginInstallKind,
-  PluginUpdateState,
   ProfileSummary,
   SpawnResult,
   UpdateResult,
@@ -31,7 +32,9 @@ interface RegistryLatest {
 
 /** The plugin settings the host surfaces (validated by schemastery in index.ts). */
 export interface ManagerConfig {
-  /** Profile to manage; empty = auto-detect (argv --profile, then `web`). */
+  /** Profiles to manage (explicit list wins). */
+  profiles?: string[]
+  /** Single-profile fallback; empty = auto-detect (argv --profile, then `web`). */
   profile?: string
   /** npm registry base URL for version checks. */
   registry?: string
@@ -62,6 +65,10 @@ const registryCache = new Map<string, { at: number; version?: string; error?: st
 const REGISTRY_CACHE_MS = 60_000
 /** Parallelism cap for update checks. */
 const CHECK_CONCURRENCY = 6
+/** In-flight operations, one per profile directory (value = operation label). */
+const activeOperations = new Map<string, string>()
+/** The package name this manager identifies itself as for auto-detection. */
+const SELF_PACKAGE = 'dsh-plugin-manager'
 
 /** Whether the target platform runs Windows (spawn/candidates behave differently). */
 const isWin = (platform: NodeJS.Platform): boolean => platform === 'win32'
@@ -215,17 +222,24 @@ function assertSafePackageName(name: string): void {
   }
 }
 
-/** The dsh plugin manager: one instance per host plugin apply. */
+/**
+ * The dsh plugin manager. One instance per host plugin apply; methods take an
+ * optional profile name (default: the current profile this host booted).
+ */
 export class PluginManager {
   private readonly deps: ManagerDeps
   private readonly spawn: SpawnFn
-  private updating: string | undefined
   /** pnpm absolute path, re-resolved on every use (config may change). */
   private lastPnpm: string | undefined
 
   constructor(deps: ManagerDeps) {
     this.deps = deps
     this.spawn = deps.spawn ?? defaultSpawn
+  }
+
+  /** The home directory this manager operates under. */
+  private homeBase(): string {
+    return this.deps.home ?? homedir()
   }
 
   /** The active profile name: config → argv --profile → env → `web`. */
@@ -241,9 +255,52 @@ export class PluginManager {
     return 'web'
   }
 
-  /** Absolute profile directory. */
-  profileDir(): string {
-    return join(this.deps.home ?? homedir(), '.dsh', 'profiles', this.profileName())
+  /** Absolute directory of one profile (default: the current one). */
+  profileDir(profile = this.profileName()): string {
+    return join(this.homeBase(), '.dsh', 'profiles', profile)
+  }
+
+  /**
+   * The profiles this manager manages, in order: explicit `profiles` config,
+   * then the single `profile` config, then auto-detection — the profiles that
+   * mount this plugin (its dependency), falling back to every profile that
+   * exists, then to the current profile.
+   */
+  profiles(): string[] {
+    const configured = this.deps.config().profiles
+    if (configured !== undefined && configured.length > 0) return [...configured]
+    const single = this.deps.config().profile
+    if (single !== undefined && single !== '') return [single]
+    return this.detectProfiles()
+  }
+
+  /** Scan ~/.dsh/profiles for profiles that exist / host this plugin. */
+  private detectProfiles(): string[] {
+    const base = join(this.homeBase(), '.dsh', 'profiles')
+    let names: string[] = []
+    try {
+      names = readdirSync(base, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && existsSync(join(base, entry.name, 'package.json')))
+        .map((entry) => entry.name)
+    } catch {
+      // No profiles directory at all.
+    }
+    const hosting = names.filter((name) => this.profileHasSelf(name))
+    if (hosting.length > 0) return hosting
+    if (names.length > 0) return names
+    return [this.profileName()]
+  }
+
+  /** Whether a profile's dependencies include this plugin. */
+  private profileHasSelf(name: string): boolean {
+    try {
+      const manifest = JSON.parse(readFileSync(join(this.homeBase(), '.dsh', 'profiles', name, 'package.json'), 'utf8')) as {
+        dependencies?: Record<string, unknown>
+      }
+      return typeof manifest.dependencies === 'object' && manifest.dependencies !== null && SELF_PACKAGE in manifest.dependencies
+    } catch {
+      return false
+    }
   }
 
   /** The npm registry base URL (trailing slash trimmed). */
@@ -260,9 +317,35 @@ export class PluginManager {
     return this.lastPnpm
   }
 
+  /**
+   * The store-dir a profile's node_modules was linked against, read from
+   * pnpm's `.modules.yaml`. GUI-host processes can resolve a different
+   * default store than the shell that installed the profile; pinning the
+   * spawned pnpm to the recorded store avoids "linked with a different pnpm
+   * store" failures.
+   */
+  private storeDir(dir: string): string | undefined {
+    const modulesYaml = join(dir, 'node_modules', '.modules.yaml')
+    if (!existsSync(modulesYaml)) return undefined
+    try {
+      const match = /["']storeDir["']\s*:\s*["']([^"']+)["']/.exec(readFileSync(modulesYaml, 'utf8'))
+      return match?.[1]
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Spawn env for pnpm/git: widened PATH plus the profile's pinned store. */
+  private spawnEnv(dir: string): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: widenedPath() }
+    const storeDir = this.storeDir(dir)
+    if (storeDir !== undefined) env.npm_config_store_dir = storeDir
+    return env
+  }
+
   /** Read the profile manifest (undefined when the profile does not exist). */
-  private readProfileManifest(): { dependencies: Record<string, string> } | undefined {
-    const manifestPath = join(this.profileDir(), 'package.json')
+  private readProfileManifest(profile = this.profileName()): { dependencies: Record<string, string> } | undefined {
+    const manifestPath = join(this.profileDir(profile), 'package.json')
     if (!existsSync(manifestPath)) return undefined
     try {
       const manifest: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'))
@@ -275,9 +358,9 @@ export class PluginManager {
   }
 
   /** Absolute directory of one installed dependency, or undefined. */
-  private resolvePackageDir(name: string): string | undefined {
+  private resolvePackageDir(name: string, profile = this.profileName()): string | undefined {
     try {
-      const requireFromProfile = createRequire(join(this.profileDir(), 'package.json'))
+      const requireFromProfile = createRequire(join(this.profileDir(profile), 'package.json'))
       const manifestPath = requireFromProfile.resolve(`${name}/package.json`)
       return dirname(manifestPath)
     } catch {
@@ -286,13 +369,13 @@ export class PluginManager {
   }
 
   /** Metadata of one installed dependency's own package.json. */
-  private readPackageMeta(name: string): {
+  private readPackageMeta(name: string, profile = this.profileName()): {
     version: string
     repository: string | undefined
     gitHead: string | undefined
     isBundle: boolean
   } | undefined {
-    const dir = this.resolvePackageDir(name)
+    const dir = this.resolvePackageDir(name, profile)
     if (dir === undefined) return undefined
     const manifestPath = join(dir, 'package.json')
     if (!existsSync(manifestPath)) return undefined
@@ -331,8 +414,8 @@ export class PluginManager {
    * installed package.json, but the lockfile's importer entry carries the
    * commit-addressed tarball URL (`...tar.gz/<40-hex-hash>`).
    */
-  private installedGitCommit(name: string): string | undefined {
-    const lockPath = join(this.profileDir(), 'pnpm-lock.yaml')
+  private installedGitCommit(name: string, profile = this.profileName()): string | undefined {
+    const lockPath = join(this.profileDir(profile), 'pnpm-lock.yaml')
     if (!existsSync(lockPath)) return undefined
     const text = readFileSync(lockPath, 'utf8')
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -345,11 +428,11 @@ export class PluginManager {
   }
 
   /** Project every profile dependency into a plugin row (no update checks). */
-  listPlugins(): PluginEntry[] {
-    const manifest = this.readProfileManifest()
+  listPlugins(profile = this.profileName()): PluginEntry[] {
+    const manifest = this.readProfileManifest(profile)
     if (manifest === undefined) return []
     return Object.entries(manifest.dependencies).map(([name, spec]) => {
-      const meta = this.readPackageMeta(name)
+      const meta = this.readPackageMeta(name, profile)
       return {
         name,
         spec,
@@ -357,7 +440,7 @@ export class PluginManager {
         repository: meta?.repository ?? specToRepositoryUrl(spec),
         isBundle: meta?.isBundle ?? false,
         kind: classifySpec(spec),
-        gitHead: meta?.gitHead ?? this.installedGitCommit(name),
+        gitHead: meta?.gitHead ?? this.installedGitCommit(name, profile),
         latest: undefined,
         latestGitHead: undefined,
         latestSource: undefined,
@@ -368,14 +451,25 @@ export class PluginManager {
   }
 
   /** The live profile summary for the panel header. */
-  summary(): ProfileSummary {
+  summary(profile = this.profileName()): ProfileSummary {
+    const dir = this.profileDir(profile)
     return {
-      name: this.profileName(),
-      dir: this.profileDir(),
+      name: profile,
+      dir,
       pnpm: this.pnpmPath(),
       registry: this.registry(),
-      updating: this.updating !== undefined,
+      updating: activeOperations.has(dir),
     }
+  }
+
+  /** One profile view (summary + plugin rows) for the panel / tools. */
+  profileView(profile = this.profileName()): { profile: ProfileSummary; plugins: PluginEntry[] } {
+    return { profile: this.summary(profile), plugins: this.listPlugins(profile) }
+  }
+
+  /** Views for every managed profile. */
+  allProfileViews(): Array<{ profile: ProfileSummary; plugins: PluginEntry[] }> {
+    return this.profiles().map((profile) => this.profileView(profile))
   }
 
   /** Fetch the latest published version of one package from the registry. */
@@ -408,9 +502,9 @@ export class PluginManager {
   }
 
   /** Resolve the git remote's default branch head for a repository URL. */
-  private async gitRemoteHead(url: string): Promise<{ head?: string; branch?: string; error?: string }> {
+  private async gitRemoteHead(url: string, profile = this.profileName()): Promise<{ head?: string; branch?: string; error?: string }> {
     const run = async (args: string[]): Promise<SpawnResult> =>
-      this.spawn('git', args, { cwd: this.profileDir(), timeoutMs: 25_000, env: { ...process.env, PATH: widenedPath() } })
+      this.spawn('git', args, { cwd: this.profileDir(profile), timeoutMs: 25_000, env: this.spawnEnv(this.profileDir(profile)) })
     try {
       const symref = await run(['ls-remote', '--symref', url, 'HEAD'])
       const refLine = symref.stdout.split('\n').find((line) => line.includes('ref:'))
@@ -434,7 +528,7 @@ export class PluginManager {
   }
 
   /** Check one plugin for updates and return the updated row. */
-  async checkOne(entry: PluginEntry): Promise<PluginEntry> {
+  async checkOne(entry: PluginEntry, profile = this.profileName()): Promise<PluginEntry> {
     const next: PluginEntry = { ...entry, state: 'checking' }
     if (entry.kind === 'local') {
       return { ...next, state: 'current', error: undefined, latest: entry.version }
@@ -447,7 +541,7 @@ export class PluginManager {
       if (url === undefined) {
         return { ...next, state: 'error', error: 'git dependency without a resolvable repository URL' }
       }
-      const remote = await this.gitRemoteHead(url)
+      const remote = await this.gitRemoteHead(url, profile)
       if (remote.head === undefined) {
         return { ...next, state: 'error', error: remote.error ?? 'git check failed' }
       }
@@ -477,8 +571,8 @@ export class PluginManager {
   }
 
   /** Run update checks (all plugins or the named subset), limited concurrency. */
-  async checkUpdates(request?: CheckRequest): Promise<PluginEntry[]> {
-    let entries = this.listPlugins()
+  async checkUpdates(request?: CheckRequest, profile = this.profileName()): Promise<PluginEntry[]> {
+    let entries = this.listPlugins(profile)
     if (request?.names !== undefined && request.names.length > 0) {
       const wanted = new Set(request.names)
       entries = entries.filter((entry) => wanted.has(entry.name))
@@ -489,13 +583,23 @@ export class PluginManager {
       for (;;) {
         const entry = queue.shift()
         if (entry === undefined) return
-        results.push(await this.checkOne(entry))
+        results.push(await this.checkOne(entry, profile))
       }
     })
     await Promise.all(workers)
     // Preserve dependency order.
     const byName = new Map(results.map((entry) => [entry.name, entry]))
     return entries.map((entry) => byName.get(entry.name) ?? entry)
+  }
+
+  /** Checked views for one profile (or every managed profile when omitted). */
+  async checkProfileViews(profile?: string): Promise<Array<{ profile: ProfileSummary; plugins: PluginEntry[] }>> {
+    const targets = profile !== undefined && profile !== '' ? [profile] : this.profiles()
+    const views: Array<{ profile: ProfileSummary; plugins: PluginEntry[] }> = []
+    for (const target of targets) {
+      views.push({ profile: this.summary(target), plugins: await this.checkUpdates(undefined, target) })
+    }
+    return views
   }
 
   /**
@@ -510,14 +614,14 @@ export class PluginManager {
    * a manual `pnpm add pkg@<version>` update would do. A version at or below
    * the installed one is refused.
    */
-  private async updateArgs(name: string, spec: string): Promise<string[] | undefined> {
+  private async updateArgs(name: string, spec: string, profile: string): Promise<string[] | undefined> {
     if (classifySpec(spec) === 'local') return undefined
     if (classifySpec(spec) === 'git') return ['up', name]
     const latest = await this.registryLatest(name)
     if (latest.version === undefined) {
       throw new Error(`cannot resolve the newest version of '${name}': ${latest.error ?? 'registry check failed'}`)
     }
-    const meta = this.readPackageMeta(name)
+    const meta = this.readPackageMeta(name, profile)
     if (meta !== undefined && compareVersions(latest.version, meta.version) <= 0) {
       throw new Error(`'${name}' is already at the newest available version (${meta.version})`)
     }
@@ -525,22 +629,24 @@ export class PluginManager {
   }
 
   /** Update one plugin through pnpm (throws on failure details). */
-  async updatePlugin(name: string): Promise<UpdateResult> {
-    if (this.updating !== undefined) {
-      throw new Error(`another profile operation is already running (${this.updating})`)
-    }
+  async updatePlugin(name: string, profile = this.profileName()): Promise<UpdateResult> {
     assertSafePackageName(name)
-    const manifest = this.readProfileManifest()
+    const dir = this.profileDir(profile)
+    const existing = activeOperations.get(dir)
+    if (existing !== undefined) {
+      throw new Error(`another profile operation is already running in profile '${profile}' (${existing})`)
+    }
+    const manifest = this.readProfileManifest(profile)
     const spec = manifest?.dependencies[name]
-    if (spec === undefined) throw new Error(`package '${name}' is not a profile dependency`)
+    if (spec === undefined) throw new Error(`package '${name}' is not a dependency of profile '${profile}'`)
     // The in-flight lock must be taken before the first await: updateArgs
-    // resolves the target version over the network, and a second update could
-    // otherwise slip through the check during that window and run pnpm
+    // resolves the target version over the network, and a second operation
+    // could otherwise slip through the check during that window and run pnpm
     // concurrently in the same profile directory.
-    this.updating = name
+    activeOperations.set(dir, name)
     const started = Date.now()
     try {
-      const args = await this.updateArgs(name, spec)
+      const args = await this.updateArgs(name, spec, profile)
       if (args === undefined) {
         throw new Error(`'${name}' is installed as a local link — update it in its source directory`)
       }
@@ -549,9 +655,9 @@ export class PluginManager {
         throw new Error('pnpm not found — install pnpm or set the pnpm path in the plugin settings')
       }
       const result = await this.spawn(pnpm, args, {
-        cwd: this.profileDir(),
+        cwd: dir,
         timeoutMs: 10 * 60_000,
-        env: { ...process.env, PATH: widenedPath() },
+        env: this.spawnEnv(dir),
       })
       const output = [result.stdout, result.stderr].filter((part) => part !== '').join('\n')
       const ok = result.exitCode === 0
@@ -563,13 +669,13 @@ export class PluginManager {
         error: result.error ?? (ok ? undefined : `pnpm exited with code ${String(result.exitCode)}`),
       }
     } finally {
-      this.updating = undefined
+      activeOperations.delete(dir)
     }
   }
 
   /** Drop a removed dependency from the profile's bundle layer list. */
-  private reconcileBundlesAfterRemoval(name: string): void {
-    const manifestPath = join(this.profileDir(), 'package.json')
+  private reconcileBundlesAfterRemoval(name: string, profile: string): void {
+    const manifestPath = join(this.profileDir(profile), 'package.json')
     if (!existsSync(manifestPath)) return
     try {
       const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
@@ -593,30 +699,32 @@ export class PluginManager {
   }
 
   /** Remove one plugin from the profile through pnpm (throws on failure). */
-  async removePlugin(name: string): Promise<UpdateResult> {
-    if (this.updating !== undefined) {
-      throw new Error(`another profile operation is already running (${this.updating})`)
-    }
+  async removePlugin(name: string, profile = this.profileName()): Promise<UpdateResult> {
     assertSafePackageName(name)
-    const manifest = this.readProfileManifest()
+    const dir = this.profileDir(profile)
+    const existing = activeOperations.get(dir)
+    if (existing !== undefined) {
+      throw new Error(`another profile operation is already running in profile '${profile}' (${existing})`)
+    }
+    const manifest = this.readProfileManifest(profile)
     if (manifest?.dependencies[name] === undefined) {
-      throw new Error(`package '${name}' is not a profile dependency`)
+      throw new Error(`package '${name}' is not a dependency of profile '${profile}'`)
     }
     const pnpm = this.pnpmPath()
     if (pnpm === undefined) {
       throw new Error('pnpm not found — install pnpm or set the pnpm path in the plugin settings')
     }
-    this.updating = `remove:${name}`
+    activeOperations.set(dir, `remove:${name}`)
     const started = Date.now()
     try {
       const result = await this.spawn(pnpm, ['remove', name], {
-        cwd: this.profileDir(),
+        cwd: dir,
         timeoutMs: 10 * 60_000,
-        env: { ...process.env, PATH: widenedPath() },
+        env: this.spawnEnv(dir),
       })
       const output = [result.stdout, result.stderr].filter((part) => part !== '').join('\n')
       const ok = result.exitCode === 0
-      if (ok) this.reconcileBundlesAfterRemoval(name)
+      if (ok) this.reconcileBundlesAfterRemoval(name, profile)
       return {
         name,
         ok,
@@ -625,17 +733,17 @@ export class PluginManager {
         error: result.error ?? (ok ? undefined : `pnpm exited with code ${String(result.exitCode)}`),
       }
     } finally {
-      this.updating = undefined
+      activeOperations.delete(dir)
     }
   }
 
-  /** Update every plugin whose last check said `outdated`, sequentially. */
-  async updateAll(): Promise<UpdateResult[]> {
-    const outdated = (await this.checkUpdates()).filter((entry) => entry.state === 'outdated')
+  /** Update every plugin whose last check said `outdated` in one profile. */
+  async updateAll(profile = this.profileName()): Promise<UpdateResult[]> {
+    const outdated = (await this.checkUpdates(undefined, profile)).filter((entry) => entry.state === 'outdated')
     const results: UpdateResult[] = []
     for (const entry of outdated) {
       try {
-        results.push(await this.updatePlugin(entry.name))
+        results.push(await this.updatePlugin(entry.name, profile))
       } catch (error) {
         results.push({
           name: entry.name,
@@ -649,6 +757,3 @@ export class PluginManager {
     return results
   }
 }
-
-/** Re-export the update-state type for type-only imports elsewhere. */
-export type { PluginUpdateState }

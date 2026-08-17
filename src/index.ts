@@ -34,6 +34,8 @@ export const PLUGIN_MANAGER_SETTINGS_NAMESPACE = settingsNamespace('dsh-plugin-m
 export interface Config {
   /** Profile to manage; empty auto-detects (argv --profile, then `web`). */
   profile?: string
+  /** Explicit profile list; empty auto-detects the profiles mounting this plugin. */
+  profiles?: string[]
   /** npm registry base URL for version checks. */
   registry?: string
   /** Explicit pnpm binary path; empty auto-detects. */
@@ -46,6 +48,7 @@ export interface Config {
 
 export const Config: z<Config> = z.object({
   profile: z.string().description('要管理的 profile 名称（留空自动检测，默认 web）。'),
+  profiles: z.array(z.string()).description('要管理的 profile 列表（留空自动检测安装了本插件的所有 profile）。'),
   registry: z.string().description('npm registry 地址（默认 https://registry.npmjs.org）。'),
   pnpmPath: z.string().description('pnpm 可执行文件路径（留空自动检测）。'),
   enabled: z.boolean().default(true).description('插件总开关。'),
@@ -56,7 +59,7 @@ export const Config: z<Config> = z.object({
 const SECTION_ORDER = 160
 
 /** Model-facing announcement: plugin presence, capabilities, and limits. */
-const PLUGIN_MANAGER_GUIDANCE = '本机已安装 dsh-plugin-manager 插件（DSH 第三方插件管理器）：侧边栏「插件管理」入口；管理 web profile 中通过 pnpm 安装的第三方插件（包名/版本/git 仓库，含 GitHub 安装的插件）。能力：dsh_plugin_check 列出已装插件并检测更新（npm registry 或 git ls-remote）、dsh_plugin_update 通过 pnpm 更新单个或全部可更新插件、dsh_plugin_remove 删除单个第三方插件；面板内可一键更新/删除。限制：更新/删除只改 profile 的依赖与 lock 文件；host 端新代码需重启 DSH 生效；需网络与 pnpm；本地 link 安装的插件需在源码目录自行更新。用户提到「插件更新 / 升级插件 / 检查插件版本 / 删除插件 / 卸载插件」时即指本插件，请据此协作。'
+const PLUGIN_MANAGER_GUIDANCE = '本机已安装 dsh-plugin-manager 插件（DSH 第三方插件管理器）：侧边栏「插件管理」入口；自动检测并管理所有安装了本插件的 dsh profile（如 web / desktop）中通过 pnpm 安装的第三方插件（包名/版本/git 仓库，含 GitHub 安装的插件），面板内可切换 profile。能力：dsh_plugin_check 列出已装插件并检测更新（npm registry 或 git ls-remote）、dsh_plugin_update 通过 pnpm 更新单个或全部可更新插件、dsh_plugin_remove 删除单个第三方插件（均可加 profile 参数指定 profile）；面板内可一键更新/删除。限制：更新/删除只改对应 profile 的依赖与 lock 文件；host 端新代码需重启 DSH 生效；需网络与 pnpm；本地 link 安装的插件需在源码目录自行更新。用户提到「插件更新 / 升级插件 / 检查插件版本 / 删除插件 / 卸载插件」时即指本插件，请据此协作。'
 
 /**
  * Mount the plugin manager service, routes, tools, and announcement.

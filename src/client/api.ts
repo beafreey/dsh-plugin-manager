@@ -5,8 +5,7 @@
 
 import {
   PLUGIN_MANAGER_API,
-  type PluginEntry,
-  type ProfileSummary,
+  type ProfileView,
   type UpdateResult,
 } from '../protocol.ts'
 
@@ -37,46 +36,54 @@ async function readJson<T>(response: Response): Promise<T> {
 
 /** The browser half's only data entry point. */
 export class PluginManagerApi {
-  /** Profile summary + installed plugin rows (no checks). */
-  async list(): Promise<{ profile: ProfileSummary; plugins: PluginEntry[] }> {
-    const response = await fetch(PLUGIN_MANAGER_API.list)
-    return readJson<{ profile: ProfileSummary; plugins: PluginEntry[] }>(response)
+  /** Profile views (summary + plugin rows) for every managed profile. */
+  async list(profile?: string): Promise<ProfileView[]> {
+    const query = profile !== undefined && profile !== '' ? `?profile=${encodeURIComponent(profile)}` : ''
+    const response = await fetch(PLUGIN_MANAGER_API.list + query)
+    return readJson<{ profiles: ProfileView[] }>(response).then(body => body.profiles)
   }
 
-  /** Run update checks (every plugin, or the named subset). */
-  async check(names?: string[]): Promise<{ profile: ProfileSummary; plugins: PluginEntry[] }> {
+  /** Run update checks (every profile, or the named one / subset of plugins). */
+  async check(profile?: string, names?: string[]): Promise<ProfileView[]> {
+    const body: Record<string, unknown> = {}
+    if (profile !== undefined && profile !== '') body.profile = profile
+    if (names !== undefined && names.length > 0) body.names = names
     const response = await fetch(PLUGIN_MANAGER_API.check, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(names !== undefined && names.length > 0 ? { names } : {}),
+      body: JSON.stringify(body),
     })
-    return readJson<{ profile: ProfileSummary; plugins: PluginEntry[] }>(response)
+    return readJson<{ profiles: ProfileView[] }>(response).then(body => body.profiles)
   }
 
-  /** Update one plugin through pnpm. */
-  async update(name: string): Promise<UpdateResult> {
+  /** Update one plugin through pnpm in one profile. */
+  async update(profile: string, name: string): Promise<UpdateResult> {
     const response = await fetch(PLUGIN_MANAGER_API.update, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ profile, name }),
     })
     const body = await readJson<{ result: UpdateResult }>(response)
     return body.result
   }
 
-  /** Update every outdated plugin. */
-  async updateAll(): Promise<UpdateResult[]> {
-    const response = await fetch(PLUGIN_MANAGER_API.updateAll, { method: 'POST' })
+  /** Update every outdated plugin in one profile. */
+  async updateAll(profile: string): Promise<UpdateResult[]> {
+    const response = await fetch(PLUGIN_MANAGER_API.updateAll, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ profile }),
+    })
     const body = await readJson<{ results: UpdateResult[] }>(response)
     return body.results
   }
 
-  /** Remove one plugin from the profile through pnpm. */
-  async remove(name: string): Promise<UpdateResult> {
+  /** Remove one plugin from one profile through pnpm. */
+  async remove(profile: string, name: string): Promise<UpdateResult> {
     const response = await fetch(PLUGIN_MANAGER_API.remove, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ profile, name }),
     })
     const body = await readJson<{ result: UpdateResult }>(response)
     return body.result

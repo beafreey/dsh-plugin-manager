@@ -1,24 +1,25 @@
 /**
  * Panel controller — framework-free state machine between the React panel and
- * the host API. Owns: the plugin list, per-plugin update-check state, in-flight
- * update flags, the restart hint, and the panel open flag driving the sidebar
- * entry + center-column takeover. Subscribers get the whole snapshot.
+ * the host API. Owns: the per-profile plugin lists, update-check state,
+ * in-flight operation flags, the restart hint, and the panel open flag driving
+ * the sidebar entry + center-column takeover. Subscribers get the whole
+ * snapshot.
  */
 import { PluginManagerApi } from './api.ts';
-import type { PluginEntry, ProfileSummary, UpdateResult } from '../protocol.ts';
+import type { PluginEntry, ProfileSummary, ProfileView, UpdateResult } from '../protocol.ts';
 /** Full UI state the panel renders. */
 export interface PanelSnapshot {
     /** Panel visibility (sidebar entry toggle). */
     panelOpen: boolean;
-    /** Profile summary from the last list/check response. */
-    profile: ProfileSummary | undefined;
-    /** Plugin rows in dependency order. */
-    plugins: PluginEntry[];
+    /** Every managed profile with its summary and plugin rows. */
+    profiles: ProfileView[];
+    /** The active profile tab. */
+    active: string;
     /** A list/check call is in flight. */
     loading: boolean;
     /** A check call is in flight (separate from the initial list load). */
     checking: boolean;
-    /** Package names with an update running right now. */
+    /** `${profile}\u0000${name}` keys with an update/remove running right now. */
     updating: Set<string>;
     /** Last banner (info / error) shown to the user. */
     banner: {
@@ -58,19 +59,25 @@ export declare class PluginManagerController {
     toggle(): void;
     /** Close the panel (sibling-panel eviction path). */
     close(): void;
+    /** Switch the active profile tab. */
+    setActive(profile: string): void;
+    /** Replace (or merge) profile views into the state. */
+    private mergeViews;
     /**
-     * Load the plugin list; runs a check when it is the first load (so the
+     * Load the profile views; runs a check when it is the first load (so the
      * panel opens with update states already populated).
      */
     load(forceCheck: boolean): Promise<void>;
-    /** Re-run update checks for every plugin. */
-    check(names?: string[]): Promise<void>;
-    /** Update one plugin; returns the pnpm result for the inline log. */
-    update(name: string): Promise<UpdateResult | undefined>;
-    /** Update every outdated plugin sequentially. */
-    updateAll(): Promise<void>;
-    /** Remove one plugin from the profile; returns the pnpm result. */
-    remove(name: string): Promise<UpdateResult | undefined>;
-    /** Refresh the row list after one update so the new versions show. */
-    private reloadAfterUpdate;
+    /** Re-run update checks (the active profile, or every profile when omitted). */
+    check(profile?: string, names?: string[]): Promise<void>;
+    /** Update one plugin in one profile; returns the pnpm result. */
+    update(profile: string, name: string): Promise<UpdateResult | undefined>;
+    /** Update every outdated plugin in the active profile sequentially. */
+    updateAll(profile: string): Promise<void>;
+    /** Remove one plugin from one profile; returns the pnpm result. */
+    remove(profile: string, name: string): Promise<UpdateResult | undefined>;
+    /** Convenience accessors for the panel. */
+    activeView(): ProfileView | undefined;
+    summaryOf(profile: string): ProfileSummary | undefined;
+    pluginsOf(profile: string): PluginEntry[];
 }
