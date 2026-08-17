@@ -17,14 +17,15 @@
 ## ✨ 功能一览
 
 - **📋 插件清单**：读取 `~/.dsh/profiles/<profile>/package.json` 的 dependencies，逐包解析出包名、版本、git 仓库、安装方式（registry / git / 本地 link），并标识是否声明了 `dsh.bundle.patch`
+- **👥 多 profile 管理**：自动检测并管理所有安装了本插件的 profile（如 `web` / `desktop`，可在设置里用 `profiles` 显式指定）；面板顶部 profile 页签切换，每个 profile 独立查看/检查/更新/删除，互不干扰（每 profile 各自单飞锁，可跨 profile 并发）
 - **🔍 更新检查**（npm registry + git 双源）：
   - registry 安装的包 → 查询 npm registry 最新版本（registry 地址可在插件设置里改）
   - GitHub / Git 安装的包（`github:用户/仓库`、`git+https://...`、`gitlab:`、`bitbucket:`）→ `git ls-remote` 比对默认分支 HEAD；即使包内没写 `repository` 字段也会从依赖 spec 推导地址；已安装提交从 `pnpm-lock.yaml` 读取（兼容 pnpm 11 不写 `gitHead` 的行为）
   - 本地 link/file 安装 → 标记本地链接，跳过检查（请在源码目录自行更新）
-- **⬆️ 一键更新**：单个插件或全部可更新插件；registry 包按**精确最新版本**安装（`pnpm add <包>@<最新版> --save-exact`，绕开 pnpm 11 release-age 策略把 `@latest` 解析成旧版导致的降级），git 包用 `pnpm up`；更新后提示重启 DSH 生效
+- **⬆️ 一键更新**：单个插件或全部可更新插件；registry 包按**精确最新版本**安装（`pnpm add <包>@<最新版> --save-exact`，绕开 pnpm 11 release-age 策略把 `@latest` 解析成旧版导致的降级），git 包用 `pnpm up`；spawn 时按该 profile 的 `.modules.yaml` 固定 pnpm store，避免 GUI 宿主环境与安装环境 store 不一致导致失败；更新后提示重启 DSH 生效
 - **🗑️ 删除插件**：每行「删除」按钮（两段式确认），执行 `pnpm remove <包名>` 并自动从 `dsh.profile.bundles` 清单同步移除
-- **🤖 Agent 工具**：`dsh_plugin_check`（列出+检测更新）、`dsh_plugin_update`（更新）、`dsh_plugin_remove`（删除）——在聊天里说「帮我看看哪些插件有新版本」即可执行
-- **⚙️ 可配置**：profile 名（默认自动检测，缺省 `web`）、registry 地址、pnpm 路径、总开关、agent 公告开关
+- **🤖 Agent 工具**：`dsh_plugin_check`（列出+检测更新）、`dsh_plugin_update`（更新）、`dsh_plugin_remove`（删除），均可加 `profile` 参数指定 profile——在聊天里说「帮我看看哪些插件有新版本」即可执行
+- **⚙️ 可配置**：`profiles` 列表（默认自动检测所有挂载本插件的 profile）、registry 地址、pnpm 路径、总开关、agent 公告开关
 
 ## 🚀 安装（下载方式）
 
