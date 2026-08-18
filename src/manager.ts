@@ -610,13 +610,19 @@ export class PluginManager {
    * (default minimumReleaseAge = 1 day) resolves the `latest` tag to the
    * newest release older than the age gate, which for fast-moving plugins can
    * be a downgrade from the installed version. An explicit version installs
-   * as requested (pnpm records it in minimumReleaseAgeExclude), matching what
-   * a manual `pnpm add pkg@<version>` update would do. A version at or below
-   * the installed one is refused.
+   * as requested, matching what a manual `pnpm add pkg@<version>` update
+   * would do. A version at or below the installed one is refused.
+   *
+   * Both paths append `--config.minimumReleaseAge=0`: clicking update is the
+   * user's explicit consent to the newest release, and a lockfile holding
+   * other young transitive versions (e.g. a freshly-released web-ui-all sub
+   * package) would otherwise make pnpm's re-resolution fail the whole run
+   * with a policy rejection ("lockfile contains entries that the active
+   * policies reject"), unrelated to the plugin being updated.
    */
   private async updateArgs(name: string, spec: string, profile: string): Promise<string[] | undefined> {
     if (classifySpec(spec) === 'local') return undefined
-    if (classifySpec(spec) === 'git') return ['up', name]
+    if (classifySpec(spec) === 'git') return ['up', name, '--config.minimumReleaseAge=0']
     const latest = await this.registryLatest(name)
     if (latest.version === undefined) {
       throw new Error(`cannot resolve the newest version of '${name}': ${latest.error ?? 'registry check failed'}`)
@@ -625,7 +631,7 @@ export class PluginManager {
     if (meta !== undefined && compareVersions(latest.version, meta.version) <= 0) {
       throw new Error(`'${name}' is already at the newest available version (${meta.version})`)
     }
-    return ['add', `${name}@${latest.version}`, '--save-exact']
+    return ['add', `${name}@${latest.version}`, '--save-exact', '--config.minimumReleaseAge=0']
   }
 
   /** Update one plugin through pnpm (throws on failure details). */
@@ -717,7 +723,7 @@ export class PluginManager {
     activeOperations.set(dir, `remove:${name}`)
     const started = Date.now()
     try {
-      const result = await this.spawn(pnpm, ['remove', name], {
+      const result = await this.spawn(pnpm, ['remove', name, '--config.minimumReleaseAge=0'], {
         cwd: dir,
         timeoutMs: 10 * 60_000,
         env: this.spawnEnv(dir),

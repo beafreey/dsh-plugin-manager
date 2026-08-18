@@ -137,9 +137,15 @@ export declare class PluginManager {
      * (default minimumReleaseAge = 1 day) resolves the `latest` tag to the
      * newest release older than the age gate, which for fast-moving plugins can
      * be a downgrade from the installed version. An explicit version installs
-     * as requested (pnpm records it in minimumReleaseAgeExclude), matching what
-     * a manual `pnpm add pkg@<version>` update would do. A version at or below
-     * the installed one is refused.
+     * as requested, matching what a manual `pnpm add pkg@<version>` update
+     * would do. A version at or below the installed one is refused.
+     *
+     * Both paths append `--config.minimumReleaseAge=0`: clicking update is the
+     * user's explicit consent to the newest release, and a lockfile holding
+     * other young transitive versions (e.g. a freshly-released web-ui-all sub
+     * package) would otherwise make pnpm's re-resolution fail the whole run
+     * with a policy rejection ("lockfile contains entries that the active
+     * policies reject"), unrelated to the plugin being updated.
      */
     private updateArgs;
     /** Update one plugin through pnpm (throws on failure details). */
